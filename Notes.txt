@@ -1,0 +1,228 @@
+These are notes on latlon.
+
+6/16/06
+
+Converting the distance matrix from lower triangle
+into a lookup form - | st1 | st2 | dist.
+
+The size of this matrix is n! x 3.
+
+CVS checkin 6/15 is working old version.
+
+This version will be able to work off of station ids
+that remain constant. Original version indexed on the assumption
+of integer sequenced station ids.
+
+It makes things a bit harder, but will probably pay off not to make
+a dangerous assumption.
+
+Tried to get a factorial function to work in the subroutine. Couldn't do
+it. How do you write a subroutine or function into a fortran call?
+
+Duplicate distance conflict resolution:
+
+  Find min distance in dist matrix dm.
+    x = subset(dm, dist = min(dm$dist))
+    rows.x = nrow(x)
+    if(rows.x < 1){
+      stop("Less than 1 row in dm set")
+    } else if (rows.x > 1){
+      print(x)
+      warn("duplicate rows here")
+    }
+    
+    my.row = x[1,]
+    get vols of station 1 and station 2
+    compare volumes 
+    eliminate from dm all rows with the smaller volume of station 1 or 2
+    record # stations left, distance of last eliminated set.
+    repeat until 
+   
+   
+   6/20
+   
+   The last three entries in the distance matrix cannot be handled
+   in the same way. 
+   
+   $mat
+     [,1] [,2]     [,3]
+[1,]    1    2  8.62146
+[2,]    1    3 21.18823
+[3,]    2    3 18.36964
+
+Need to come up with algorithm for evaluating these.
+
+Here is how.
+
+Look at closest 2 stations. Collapse them into one station
+based on volume. Remove low volume station. This will be
+station 3 in the elim.mat.  Collapse final two
+stations into one. The low volume will be staion 2 in
+the elim.mat and the high volume will be station 3 in elim mat.
+
+---
+There is a loop problem -- loop runs too long.
+
+6/28
+
+Things are basically working. Animation goes. We might
+be able to speed up a little by using fortran or a subset?
+
+Talk to Marc about what data we need. 
+
+Maybe change the plot to show station volume changes.
+
+Maybe come up with a way to store plot data and make 
+animation run more quickly at high counts. 
+
+7/3
+
+Error in obj$mat[, 2] : incorrect number of dimensions
+
+This error is in the update routine. Writing it in fortran to speed up
+the memory allocation issue.
+
+In update.fortran ret.n is a function of (n-1) , not n.
+
+7/5 
+
+I will not use the update.f code. It is slower than doing the
+update in R.
+
+Now I need to get the list of volumes of stations at various distances.
+
+This will be a spreadsheet. The column headers will be cluster distances.
+The stored dated in the columns will be the volumes of the remaining stations
+at the given cluster distance.
+
+Here is the general sketch of how to do this.
+
+Set boundary points at {0.1,0.2,...,0.9,1,1.33,1.66,2,3,4,5}.
+
+Watch the minDist value.
+
+When minDist crosses a boundary point grab the list list of volumes
+that are not equal to 0 from the ps matrix and store it. 
+
+We are done.
+
+One way to check for boundary crossings is to arrange a vector of 
+boundary points
+
+bounds=c(0.1,0.2,...5)
+
+and then
+
+out = (bounds - old.min.dist) * (bounds - min.dist) # second min.dist is new
+negs = out[out < 0]
+
+if (length(negs) > 0){
+  we have a boundary crossing
+  neg = out[out<0]
+  x = max(grep(neg,bounds))
+  out[x] = is the boundary crossing point
+  
+
+  }
+  
+7/11/06
+
+grep != == !!!!
+
+Using grep to test for numerical equality is a no no.
+
+7/12/06
+
+We can cluster analyze the cities.
+
+We can characterize curves based on their tails. Fitting curves
+and integrals is too complicated, and won't tell us what we want
+to really know. We want to know the summary data on the low and high 
+top 1/8th .
+
+describe.vdm see.
+
+7/12
+
+Write up cluster methodology.
+
+Add original data to cluster volume output
+Run cluster volumes for all cities.
+
+Paper is about costs.
+
+For later - Make a way to have "golden stations" that never get eliminated.
+These stations can grow, but not be eliminated. They will be the
+end state stations. Golden stations are useful in a build out 
+scenario.
+
+We also want to know at each cluster distance how many stations are remaining.
+
+7/13
+
+Start writing batching code to run all cities.
+
+Make a directory with all files, or, figure out how to cut up the
+original input file. The latter is probably the best way to go.
+ -> Take the original file and edit into a good, easy, standard shape.
+ 
+From each of the files we need the city name.
+
+Set working dir to output.
+
+Grab next 3 columns of input file. Get the name.
+
+Run the proc.latlon on the columns ( o = proc.latlon)
+
+Write the results to cur dir (write(o,'city name')
+
+We are done.
+
+7/13 5:30pm
+
+batch.r seems to work on small run. Need to get it to run on thinker.
+
+Need to take the first column out of the vol.dist.mat to make col headers
+line up correctly.
+
+2/28/07
+
+These are instructions for running the system I found in another file.
+
+=== EOF ===
+
+    Therse are instructions for running the latlong data conversion
+    macros.
+    
+    1. Run the MPSI files through the batch.r script using the latlon
+    package.
+    
+    2. This is a partially automated process. I was unable to figure
+    out how to convert all of the steps to automation and there weren't
+    enought files to justify spending a lot of time on it.
+    
+    3. Open the.data.cracker.xls from latlon. 
+    
+    Repeat the next steps for all files.
+    
+    4. Use the data->text to columns feature to get a standard excel
+    layout.
+    
+    5. Use tools->macro->run macro -> the.data.cracker$fullConvert .
+
+=== EOF ====
+
+First of all, I need to convert the scripts to run off of the db instead
+from those heinous files!!
+
+2/28 6pm
+
+Works to database. Find out what Marc wants results to be like.
+
+When installing latlong pkg on windows make sure we're in bash. 
+Otherwise there are errors.
+
+Now we need to figure what to do with result set. It just prints to screen
+right now. It should go in db, I think.
+
+Must upload other data to db.

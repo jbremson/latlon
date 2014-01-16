@@ -1,0 +1,813 @@
+.packageName <- "latlon"
+# setup a db connection
+
+h2.handle = function(){
+  library("RMySQL")
+
+  drv=dbDriver("MySQL")
+
+  con = dbConnect(drv,dbname="h2",user="joel",password="joel")
+}
+# describe.vdm
+
+# function: Make a numeric description of the vol.dist.mat upper
+#           and lower deciles (or other sized region).
+
+# input: vdm obj, lower region cutoff (optional), upper region cutoff (optional
+#         optional regions default to deciles
+
+# output: lower decile average and variance, upper decile average and
+#         variance, we could also give information on the percentage
+#         of stations within 3 sd of the decile mean.
+
+
+describe.vdm = function(obj,upper = .90,lower = .10){
+   
+   # Add error check - if upper and lower not in (0,1)
+   #     then do error...
+   vdm = obj$vol.dist.mat
+   # use first volume column - should be original values?
+   vol.col = vdm[,3]
+   u = quantile(vol.col,upper)
+   l = quantile(vol.col,lower)
+   
+   u.vol = vol.col[vol.col >= u]
+   l.vol = vol.col[vol.col <= l]
+   cat("===================================================\n")
+   cat("City Name: ", obj$city.name,"\n")
+   cat("Total Time Cost =",obj$total.time.cost,"\n\n") 
+   cat("Upper ", upper*100, "% Description\n===============================\n")
+   print(summary(u.vol))
+   cat("(quartiles of top decile original volumes)\n")
+   cat("Standard Deviation: " ,sd(u.vol), "\n")
+   u.n = round((1 - upper) * length(vol.col))
+   cat("# stations: ", u.n, " of " , length(vol.col), "\n")
+   cat("\n")
+   cat("Lower ", lower*100 , "% Description\n===============================\n")
+   print(summary(l.vol))
+    cat("(quartiles of bottom decile original volumes)\n")
+   cat("Standard Deviation: " ,sd(l.vol), "\n")
+   l.n = round(lower * length(vol.col))
+   cat("# stations: ", l.n, " of " , length(vol.col), "\n\n")
+   
+
+   
+
+}
+   
+
+# Set the S3 generic
+describe = function(obj){ UseMethod("describe",obj)}
+
+write = function(obj){UseMethod("write",obj)}
+
+write.vdm = function(obj,name=file.choose()){
+
+  v = obj$vol.dist.mat
+  write.table(v,file=name,row.names=FALSE)
+}
+
+
+
+
+
+
+# found.boundary
+#
+# input:   min.dist      - The current mininum distance in the distance matrix.
+#          old.min.dist  - The prior minimum distance in the distance matrix,
+#                          prior to the last update.
+#          verbose       - optional. Print stuff to screen when run.
+#          boundaries    - optional. A list of boundaries to use.
+#
+# output: out$bool       - boolean. Did these two vars cross a boundary of
+#                          interest?
+#         out$boundary   - real. The boundary point value that was crossed.
+#         out$count      - integer. How many boundaries were crossed. Hopefully
+#                          either 1 or 0 !!!
+#
+# function:    Given a list of boundaries values such as {1,2,3,5}, this
+#              function checks to see whether two scalar input values span
+#              one of the boundary points. For example the inputs (1.9,2.1)
+#              span the boundary point '2'.
+#
+#              The code will default to a preset boundary list. This can
+#              be overriden by setting the boundaries argument (list).
+#
+# algorithm:   This function takes advantage of the fact that the product
+#              of the inputs when subtracted from the a boundary will be
+#              negative, and under non-boundary conditions it will not.
+#
+#              If a negative value is returned, and there should only be 1
+#              if any given a non-degenerate set, then we check the index
+#              of the negative value and use it to look up the boundary point.
+#
+              
+found.boundary = function(min.dist,old.min.dist,verbose=FALSE,
+                  boundaries=c(.1,.2,.3,.4,.5,.6,.7,.8,.9,1,1.333,1.667,2,3,4,5))
+{
+  out = list()
+  x = (boundaries - min.dist) * (boundaries - old.min.dist)
+
+  out$x = x
+  # if x contains a negative or 0 val then a boundary has been crossed.
+  negs = x[x <= 0]
+  loc = length(negs)
+  if(loc > 0){
+    index = grep(negs[loc],x) # get only the last value
+    # if there is more than one occurence of negs[loc] in x
+    # then we have a problem to deal with.
+    index = max(index) # solved - just take the last index
+  }
+  if( loc > 1){
+    warning("Multiple boundaries were crossed at the distance pair:")
+    cat(min.dist, " ", old.min.dist,"\n")
+    cat("Using larger boundary value.\n")
+    out$bool = TRUE
+    out$boundary = boundaries[index]
+    out$count = loc
+  }
+
+  if (loc == 1){
+    # we've found a normal boundary pair
+    out$bool = TRUE
+    out$boundary = boundaries[index]
+    out$count = 1
+  }
+  
+  if (loc == 0){
+    out$bool = FALSE
+    out$boundary = NA
+    out$count = 0
+  }
+
+  if(verbose & out$bool == TRUE){
+    cat("Verbose mode for found.boundary\n")
+    cat("Boundaries are: ", boundaries, "\n")
+    print(out)
+  }
+  
+  return(out)
+
+
+}
+              
+# Latlon wrapper
+# Joel Bremson
+# 6/15/06
+
+# Input: a nx2 matrix of lat-lon points
+# Ouput: a nxn lower triangular matrix of distances
+
+# Note: This may make more sense to return in a linear form.
+#       Ex:
+#           station 1 | station 2 | distance
+#               1     |   2       |  .3528
+#               2     |   3       |  .8319
+#               2     |   4       |  1.887
+#                 etc
+
+new.latlon=function(ps){
+
+
+  n = nrow(ps)
+  sum.n = .5 * (n^2 - n) # sum (i..(n-1))
+  
+
+  output = matrix(-1,sum.n,3)
+
+  o = .Fortran("latlon",as.matrix(ps),as.integer(n),as.matrix(output),
+        as.integer(sum.n),as.numeric(0),as.integer(0),as.integer(0),
+        as.integer(0))
+  x = c()
+  
+  x$ps = o[[1]]
+  x$long.min = min(x$ps[,3]) - .01
+  x$long.max = max(x$ps[,3]) + .01
+  
+  x$lat.min = min(x$ps[,2]) - .01
+  x$lat.max = max(x$ps[,2]) + .01
+  x$n = o[[2]]
+  x$mat = o[[3]]
+  x$min.dist = o[[5]]
+  x$st1 = o[[6]]
+  x$st2 = o[[7]]
+  x$freq = o[[8]]
+  counts = hist(x$mat[,3],bins=20,plot=FALSE)$counts
+  x$bins = length(counts)
+  x$ylim = max(counts) # for plotting histograms 
+  class(x) = "latlon"
+  return(x)
+
+
+
+}
+
+
+# input - a latlon obj
+# output - same as latlon, except that we just eliminate the 
+# 
+
+    
+f.update.latlon = function(obj,station){
+
+       mat = obj$mat
+       n = nrow(mat)
+       # calculate output matrix row count
+       m = .5 * (n**2 - n)
+
+
+  
+
+       output = matrix(-1,m,3)
+#       SUBROUTINE update(dist, n, station, output,m, freq,minDist, st1,st2) 
+       o = .Fortran("update",as.matrix(mat),
+                            as.integer(n),
+                            as.integer(station),
+                            as.matrix(output),
+                            as.integer(m),
+                            as.numeric(0),
+                            as.integer(0),
+                            as.integer(0),
+                            as.integer(0)
+       )
+      x = c()
+      # remove station from points matrix
+      x$ps = obj$ps[obj$ps[1,] != station,]
+      x$n = o[[5]]
+      x$mat = o[[4]]
+      x$min.dist = o[[7]]
+      x$st1 = o[[8]]
+      x$st2 = o[[9]]
+      x$freq = o[[6]]
+
+      class(x) = "latlon"
+      
+      return(x)
+}
+
+summary.latlon=function(obj){
+  cat("latlon object summary\n")
+  cat("======================\n")
+  cat("Number of points: ",obj$n,"\n")
+  cat("Min dist pair = ", obj$st1, ",", obj$st2," at ", obj$min.dist, " miles.\n")
+  if(obj$freq != 1){
+    cat("*  There are ", obj$freq , " occurences of this distance.\n")
+  
+  }
+  cat("Distribution of distances: \n")
+  summary(obj$mat[,3])
+}
+
+plot.latlon=function(obj){
+ 
+  par(mfrow=c(1,2))
+
+  if(length( obj$mat) > 3){
+    plot(obj$ps[,2],obj$ps[,3],xlab="latitude",ylab="longitude",
+          main="Lat-Long Points",xlim=c(obj$lat.min,obj$lat.max),
+          ylim=c(obj$long.min,obj$long.max))
+
+    # set the bins
+    # bins are some fraction of total count
+    # ylim is fixed
+    if(obj$n < 200){
+      Sys.sleep(0.03)
+    }
+
+  
+    hist(obj$mat[,3],breaks= obj$bins,ylim=c(0,obj$ylim),xlab="miles",ylab="frequency",
+        main="Histogram of Station Distances")
+    }
+}
+
+
+.onLoad =
+function(libname, pkgname)
+{
+  dll = library.dynam("latlon", pkgname)
+
+}
+# plot.vdm
+
+# input: a vdm object from proc.latlon
+# output: a plot set of the vdm
+
+plot.vdm = function(obj){
+
+  vdm = obj$vol.dist.mat
+  elim = obj$elim.mat
+  
+  vdm.vol.cols = ncol(vdm)/3
+  palette(rainbow(vdm.vol.cols))
+ # setup par call
+ par(mfrow=c(1,1),ask=FALSE)
+ # setup with an empty plot
+
+ # plot 1 : y axis  :   percent of average station output
+ #          x axis  :   percent of stations remaining
+ 
+ # plot 1 has a general shape of e^(1/x) - 1; it goes to infinity
+ #        as the x axis decreases, and 0 as it increases
+ 
+ # There is a line for each distance cluster.
+ for(i in 1:vdm.vol.cols){
+
+    j = i*3
+    txt = gsub("^vol-","",names(vdm)[j])
+   # Start with the first volume set.
+   vol.col = vdm[!is.na(vdm[,j]),j]
+   # ps.n = number of stations in first volume set
+   ps.n= length(vol.col)
+   # ps.ave = average station size
+   ps.ave = mean(vol.col)
+   # point 1 y.val is found by ...
+       # divide vol.col by ps.ave
+   y.val = (vol.col/ps.ave) * 100
+   # point 1 x.val is found by ...
+   
+       # x.val is a reversed percentile - 1% is high, 100% is low.
+       # We need to sort the y.val vector, high to low.
+   y.val = sort(y.val,dec=TRUE)
+       # We then take 1/ps.n as separation value and create
+       # a sequence from 0 to 1. Those are the x.vals.
+   inc = 1/ps.n
+   x.val = seq(1:ps.n) * inc * 100
+   # plot the line
+   if(i == 1){
+    plot(x.val,y.val,type="l",col=i+3,xlab="Percent of Remaining Stations",
+          ylab="Percent of Average Station Output")
+   } else {
+   # repeat for all points
+    points(x.val,y.val,type="l",col=i+3)
+   }
+   text(x.val[1]+(-1)^i*2,y.val[1]+(-1)^(i+1)*2,labels=txt,col=i+3)
+ }
+   
+ # plot line ( this will be an over plot)
+ 
+ # repeat for all volume sets.
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+# Processor for latlon pkg
+# =========================
+#
+# Take points file and process down to a single point
+# while conserving volume.
+
+# input  -  a points matrix (latitude-longitude-volume) (n x 3)
+# output - a vdm object containing the elimination matrix and
+#           the volume-distance-matrix (vdm)
+
+# changes:
+# 7/13 - need to put the original data in vol.dist.mat
+
+fill.up = 10  # number of gallons of average fill up.
+time.cost = 15 # cost per hour of travel  ($)
+mph = 25 # average mph
+
+mile.cost = time.cost / mph # the cost per mile of travel
+
+proc.latlon = function(ps,city.name=NA,do.plot=TRUE){
+    conserved.vol = sum(ps[,4]) # all subsequent vol sums must equal this
+    output = list()
+    vol.dist.mat = NULL
+    vol.dist.rows = NULL
+    total.time.cost = 0
+    time.cost.df = as.data.frame(matrix(NA,nrow=nrow(ps),ncol=4))
+    names(time.cost.df) = c("elim.stn","kept.stn","distance","cost")
+  
+    elim.mat = matrix(-1,nrow(ps),2)
+    i = 1
+   # Get latlon obj
+   dat = new.latlon(ps)
+   go = TRUE
+   while( go == TRUE){
+     
+     elim.mat[i,] = c(nrow(dat$ps),dat$min.dist)
+     i = i+1
+    
+     # store info
+     # Find the min dist value.
+    
+     # Find the frequency count at that dist.
+     if(dat$freq > 1){
+        warning("There were ", dat$freq, " instances of min dist ", dat$min.dist,
+              " found.")
+        }
+     # If the freq count is > 1 store all that
+     #
+     # info for later analysis.
+     #  TODO
+     
+     # Look at the two stations with min distance.
+     
+     # The ROW entry is wrong - dat$st1 is not the row index, it's the
+     # value in in col 1. !!!
+ 
+     v1 = dat$ps[dat$ps[,1]==dat$st1,4]      # get volume station 1
+     v2 = dat$ps[dat$ps[,1]==dat$st2,4]      # " " "        ""    2
+     
+     # get the row number for st1 and st2
+
+     loc.1 = grep(paste("^",dat$st1,"$",sep=''), dat$ps[,1])
+     loc.2 = grep(paste("^",dat$st2,"$",sep=''), dat$ps[,1])
+     
+     
+     if(dat$n > 1){  # need to handle final station !!!
+
+       my.ps = as.data.frame(dat$ps)
+
+       save.vols = subset(my.ps, vol > 0, 
+            select=c(latitude,longitude,vol))
+        rm(my.ps)
+       if(v1 >= v2){
+        # v2 has been eliminated
+        # displace v2 
+        #total.time.cost = total.time.cost + (v2/fill.up)*dat$min.dist*time.cost
+        marginal.time.cost = (v2/fill.up)*dat$min.dist*time.cost
+        total.time.cost = total.time.cost + marginal.time.cost
+        time.cost.df[i,] = c(dat$st2, dat$st1,dat$min.dist, marginal.time.cost)
+        # add lesser volume to greater
+        dat$ps[loc.1,4] =  dat$ps[loc.1,4] + v2
+        dat$ps[loc.2,4] = 0
+
+        
+        # remove lesser volume from the dat
+        dat = update(dat,dat$st2)
+       } else if ( v1 < v2) {
+        #total.time.cost = total.time.cost + (v1/fill.up)*dat$min.dist*time.cost
+        marginal.time.cost = (v1/fill.up)*dat$min.dist*time.cost
+        total.time.cost = total.time.cost + marginal.time.cost
+        time.cost.df[i,] = c(dat$st1,dat$st2, dat$min.dist, marginal.time.cost)
+        
+        dat$ps[loc.2,4] =  dat$ps[loc.2,4] + v1
+        dat$ps[loc.1,4]=0
+        dat = update(dat,dat$st1)
+       } 
+       cat(i,": mean",mean(dat$mat[,3])," :median",median(dat$mat[,3])," :sd",sd(dat$mat[,3]),"\n")
+       
+       if( v1 == v2){
+        # volume conservation is handle above
+        cat("station 1: ", dat$st1, " volume: ", v1,"\n")
+        cat("station 2: ", dat$st2, " volume: ", v2,"\n")
+
+        warning("Equal station volumes. Kept station 1.")
+
+      }
+      if(sum(dat$ps[,4],na.rm=TRUE) != conserved.vol){
+          cat("ERROR: DEBUGGING MODE: conserved.vol= ", conserved.vol,"\n")
+          cat("i = ", i, " this volume = ", sum(dat$ps[,4],na.rm=TRUE) ,"\n")
+          browser() 
+      } 
+      out = found.boundary(dat$min.dist,dat$old.min.dist)
+      if(out$bool == TRUE){
+        if(is.null(vol.dist.mat)){
+
+          vol.dist.mat = ps[,2:4]
+          names(vol.dist.mat)[1:3] = set.names("orig")
+          
+          vol.dist.rows = nrow(ps)
+          #names(vol.dist.mat) = c("lat","long",out$boundary)
+        } 
+        # pad save.vols out to lenth of vol.dist.rows
+
+        
+        # Now we need to pad the save.vols matrix out with NAs
+        # The pad length is:
+
+        pad.len = vol.dist.rows - nrow(save.vols)
+        na.mat = as.data.frame(matrix(NA,nrow=pad.len,ncol=3))
+        names(na.mat) = c("latitude","longitude","vol")
+        # We must keep the names of the NA matrix the same as
+        # in the save.vols in order to append them.
+        # Use an rbind to append.
+        
+        
+        new.cols = as.data.frame(rbind(save.vols,na.mat))
+        names(new.cols) = set.names(out$boundary)
+        vol.dist.mat = as.data.frame(cbind(vol.dist.mat,new.cols))
+    
+
+        
+      }
+        
+    } else {
+      go = FALSE # ending
+      i = nrow(elim.mat)-1
+      # get the distance between the last two stations
+      #! Get look up points
+        xlong = dat$ps[1,3]
+#          
+        xlat = dat$ps[1,2]
+        ylong = dat$ps[2,3]
+        ylat = dat$ps[2,2]
+#          
+#! use great circle distance for improved accuracy
+        x = 69.1 * (ylat - xlat)
+#
+        y = 69.1 * (ylong - xlong) * cos(xlat/57.3)
+#
+#          
+#
+        final.dist = sqrt(x*x + y*y)
+
+        v1 = dat$ps[1,4]
+        v2 = dat$ps[2,4]
+        
+        if(v1 > v2){
+          # second row is minimum station
+          elim.mat[i,]= c(2, final.dist)
+          elim.mat[(i+1),] = c(1, NA)
+        } else {
+          # ignoring the case in which v1 = v2
+          # because if it happens we don't care
+          elim.mat[i,]= c(2, final.dist)
+          elim.mat[(i+1),] = c(1, NA)
+        }  
+        
+    }
+ 
+     # The station with the lower volume should be eliminated,
+     # its volume should be added to the higher vol station.
+     # Eliminate low volume station.
+     # Store station count and elimination distance
+     # Continue while loop.
+     #print(summary(dat))
+     if(do.plot == TRUE){
+             
+            if(length(dat$mat) > 3){
+              plot(dat)
+            }
+     }       
+   }
+   output$elim.mat = elim.mat
+   output$vol.dist.mat = vol.dist.mat
+   output$total.time.cost = total.time.cost
+   output$city.name = city.name
+   output$time.cost = time.cost.df
+   class(output) = "vdm"
+   return(output)
+}
+#  set.names
+#
+#  function: Set up the names of the vol.dist.mat so it each column
+#            can include the cluster distance. For example with a cluster
+#            distance of 0.5 the names returned would be:
+#
+#            lat-0.5 long-0.5 vol-0.5
+#
+#  input: cluster distance (real)
+#
+#  output: list, length = 3, type=string
+
+set.names = function(dist){
+  o = c()
+  o[1] = paste("lat-",dist,sep='')
+  o[2] = paste("long-",dist,sep='')
+  o[3] = paste("vol-",dist,sep='')
+  return(o)
+}
+# latlon test file - birmingham
+
+test.birm = function(lim=NULL){
+
+  cat("latlon test - birmingham\n")
+
+
+
+  data(birmingham)
+  if(is.null(lim)){
+    lim=nrow(birmingham)
+  }
+  ps = birmingham[1:lim,1:3]
+
+
+
+  cat(date(),"\n")
+  o = new.latlon(ps)
+  cat(date(),"\n")
+  cat("done...\n")
+  return(o)
+}
+
+r.birm = function(lim=NULL){
+  cat("This is the calc done purely in R.\n")
+  browser()
+  data(birmingham)
+  if(is.null(lim)){
+    lim = nrow(birmingham)
+  }
+  ps = birmingham[1:lim,2:3]
+
+  output = matrix(-1,nrow(ps),nrow(ps))
+  cat("starting...\n")
+  cat(date(),"\n")
+  
+#     do col = 1,n-1
+  for(col in 1:(nrow(ps)-1)){
+#! The row variable spans col+1 to n.
+    for(row in (col+1):nrow(ps)){
+#        do row = col+1,n
+#! Get look up points
+          xlong = ps[col,2]
+#          
+          xlat = ps[col,1]
+          ylong = ps[row,2]
+          ylat = ps[row,1]
+#          
+#! use great circle distance for improved accuracy
+          x = 69.1 * (ylat - xlat)
+#
+          y = 69.1 * (ylong - xlong) * cos(xlat/57.3)
+#
+#          
+#
+#!    Improved approximate distance in miles:
+#!        sqrt(x * x + y * y)
+#!    where x = 69.1 * (lat2 - lat1)
+#!    and y = 69.1 * (lon2 - lon1) * cos(lat1/57.3)
+#  
+          output[row,col] = sqrt(x*x + y*y)
+#          
+#
+      }        
+#     end do
+#      end do
+  }
+  cat(date(),"\n")
+  return(output)
+}
+
+test.la = function(lim=NULL){
+
+  cat("latlon test - L.A.\n")
+
+
+
+  data(LA)
+  if(is.null(lim)){
+    lim=nrow(LA)
+  }
+  ps = LA[1:lim,1:3]
+
+  output = matrix(-1,nrow(ps),nrow(ps))
+  cat("starting...\n")
+  cat(date(),"\n")
+  o = new.latlon(ps)
+
+  cat(date(),"\n")
+  cat("done...\n")
+  return(o)
+}
+
+r.la = function(lim=NULL){
+  cat("This is the calc done purely in R.\n")
+  browser()
+  data(LA)
+  if(is.null(lim)){
+    lim = nrow(LA)
+  }
+  ps = LA[1:lim,1:3]
+
+  output = matrix(-1,nrow(ps),nrow(ps))
+  cat("starting...\n")
+  cat(date(),"\n")
+  
+#     do col = 1,n-1
+  for(col in 1:(nrow(ps)-1)){
+#! The row variable spans col+1 to n.
+    for(row in (col+1):nrow(ps)){
+#        do row = col+1,n
+#! Get look up points
+          xlong = ps[col,2]
+#          
+          xlat = ps[col,1]
+          ylong = ps[row,2]
+          ylat = ps[row,1]
+#          
+#! use great circle distance for improved accuracy
+          x = 69.1 * (ylat - xlat)
+#
+          y = 69.1 * (ylong - xlong) * cos(xlat/57.3)
+#
+#          
+#
+#!    Improved approximate distance in miles:
+#!        sqrt(x * x + y * y)
+#!    where x = 69.1 * (lat2 - lat1)
+#!    and y = 69.1 * (lon2 - lon1) * cos(lat1/57.3)
+#  
+          output[row,col] = sqrt(x*x + y*y)
+#          
+#
+      }        
+#     end do
+#      end do
+  }
+  cat(date(),"\n")
+  return(output)
+}
+
+
+# A wrapper function for update.f
+
+# 7/3/2006 1:47:23 PM
+
+#! Input: distMat - lookup distance matrix, double precision (dn x 3)
+#!        dn - row count of distMat, integer
+#!        stID - station id to remove, integer
+#!        returnMat - return matrix w/o stID, double precison (rn x 3)
+#!        rn - row count of returnMat, integer
+#!             rn =  .5 * (dn^2 - dn) # sum (i..(dn-1))
+#
+
+update.fortran = function(obj,stID){
+
+
+  ret.n = .5 * ((obj$n-1)^2 - (obj$n -1))
+
+  if(ret.n > 0){
+    ret = matrix(-1,ret.n,3)
+    nrows = nrow(obj$mat)
+
+    o = .Fortran("update",as.matrix(obj$mat),
+                        as.integer(nrows),
+                        as.integer(stID),
+                        as.matrix(ret),
+                        as.integer(ret.n))
+                        
+  } else {
+    stop("Return matrix has row count of less than 1")
+  }
+
+  return(o[[4]])
+}
+
+
+
+# input: latlon obj, station to eliminate
+# output: same obj, with station eliminated
+
+# function: remove a station from the latlon object
+#           without having to recalculate the whole thing.
+update.latlon = function(obj,station){
+
+
+    
+    # eliminate station from mat
+    
+#    ! Input: distMat - lookup distance matrix, double precision (dn x 3)
+#!        dn - row count of distMat, integer
+#!        stID - station id to remove, integer
+#!        returnMat - return matrix w/o stID, double precison (rn x 3)
+#!        rn - row count of returnMat, integer
+#!             rn =  .5 * (dn^2 - dn) # sum (i..(dn-1))
+
+
+    obj$mat = subset(obj$mat,obj$mat[,1] != station & obj$mat[,2] != station)
+
+    # end change
+    if(length(obj$mat) < 9){
+      
+      obj$n = 1
+      obj$st1 = obj$mat[1]
+      obj$st2 = obj$mat[2]
+      obj$ps = obj$ps[obj$ps[,1] != station,]
+      obj$freq = 1
+      
+      return(obj)
+    }
+    # eliminate station from ps
+    obj$ps = obj$ps[obj$ps[,1] != station,]
+    # find new min dist
+  
+    obj$old.min.dist = obj$min.dist # save off old min.dist for boundary checking.
+    obj$min.dist = min(obj$mat[,3])
+    # how many times does this min dist occur
+    stations = grep(obj$min.dist,obj$mat[,3])
+    obj$freq = length(grep(obj$min.dist,obj$mat[,3]))
+    # what is the first pair of stations at which this occurs?
+    obj$st1 = obj$mat[stations[1],1]
+    obj$st2 = obj$mat[stations[1],2]
+    obj$n = nrow(obj$ps)
+  
+  
+
+  return(obj)
+
+
+}
